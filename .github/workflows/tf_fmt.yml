@@ -1,0 +1,21 @@
+name: tf-fmt
+
+on:
+    pull_request:
+      branches: [ "main" ]
+
+jobs:
+  tf-fmt:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+            terraform_version: "1.9.7"
+      - name: Terraform Init
+        run: terraform init
+      - name: Terraform fmt
+        run: terraform fmt -recursive -check
+        
