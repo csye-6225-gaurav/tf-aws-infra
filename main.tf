@@ -58,7 +58,7 @@ resource "aws_route_table_association" "public_rta_assc" {
 resource "aws_route_table" "private_route_table" {
   vpc_id = aws_vpc.infra_vpc
   tags = {
-    Name = "${var.env}-private-route-table"
+    Name = "${var.env}-private-route-table
   }
 }
 
