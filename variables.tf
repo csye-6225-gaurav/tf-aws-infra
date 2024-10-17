@@ -66,10 +66,10 @@ variable "webapp_instance_type" {
 
 variable "volume_size" {
   description = "Volume size of the webapp instance"
-  type = number
+  type        = number
 }
 
 variable "volume_type" {
   description = "Volume type of the webapp instance"
-  type = string
+  type        = string
 }

@@ -68,12 +68,12 @@ resource "aws_route_table_association" "private_rta_assc" {
 
 resource "aws_security_group" "app_sec_grp" {
   vpc_id = aws_vpc.infra_vpc.id
-  name = "${var.env}-application security group"
+  name   = "${var.env}-application security group"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "allow_ssh_ipv4" {
   security_group_id = aws_security_group.app_sec_grp.id
-  cidr_ipv4 = var.sec_grp_cidr
+  cidr_ipv4         = var.sec_grp_cidr
   from_port         = tonumber(each.value)
   ip_protocol       = "tcp"
   to_port           = tonumber(each.value)
@@ -84,7 +84,7 @@ resource "aws_vpc_security_group_ingress_rule" "allow_ssh_ipv4" {
 
 resource "aws_vpc_security_group_egress_rule" "allow_all" {
   security_group_id = aws_security_group.app_sec_grp.id
-  cidr_ipv4 = var.sec_grp_cidr
+  cidr_ipv4         = var.sec_grp_cidr
   ip_protocol       = "-1"
 }
 
