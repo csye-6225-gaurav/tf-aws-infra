@@ -73,3 +73,8 @@ variable "volume_type" {
   description = "Volume type of the webapp instance"
   type        = string
 }
+
+variable "ec2_termination_protection" {
+  description = "Flag to stop ec2 termination protection"
+  type        = bool
+}

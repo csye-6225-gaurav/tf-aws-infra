@@ -89,10 +89,11 @@ resource "aws_vpc_security_group_egress_rule" "allow_all" {
 }
 
 resource "aws_instance" "webapp_instance" {
-  ami                    = var.AMI_id
-  instance_type          = var.webapp_instance_type
-  subnet_id              = aws_subnet.public_subnet[0].id
-  vpc_security_group_ids = [aws_security_group.app_sec_grp.id]
+  ami                     = var.AMI_id
+  instance_type           = var.webapp_instance_type
+  subnet_id               = aws_subnet.public_subnet[0].id
+  vpc_security_group_ids  = [aws_security_group.app_sec_grp.id]
+  disable_api_termination = var.ec2_termination_protection
 
   root_block_device {
     volume_size = var.volume_size
