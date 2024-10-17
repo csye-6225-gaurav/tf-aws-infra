@@ -96,8 +96,9 @@ resource "aws_instance" "webapp_instance" {
   disable_api_termination = var.ec2_termination_protection
 
   root_block_device {
-    volume_size = var.volume_size
-    volume_type = var.volume_type
+    volume_size           = var.volume_size
+    volume_type           = var.volume_type
+    delete_on_termination = var.delete_on_termination
   }
   tags = {
     Name = "${var.env}-webapp-instance"
