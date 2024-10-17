@@ -78,3 +78,7 @@ variable "ec2_termination_protection" {
   description = "Flag to stop ec2 termination protection"
   type        = bool
 }
+variable "delete_on_termination" {
+  description = "Flag to delete EBS volume when instance is terminated"
+  type        = bool
+}
