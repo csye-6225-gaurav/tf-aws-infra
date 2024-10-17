@@ -93,6 +93,7 @@ resource "aws_instance" "webapp_instance" {
   instance_type          = var.webapp_instance_type
   subnet_id              = aws_subnet.public_subnet[0].id
   vpc_security_group_ids = [aws_security_group.app_sec_grp.id]
+  disable_api_termination = var.ec2_termination_protection
 
   root_block_device {
     volume_size = var.volume_size
