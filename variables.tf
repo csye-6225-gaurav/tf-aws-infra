@@ -82,3 +82,76 @@ variable "delete_on_termination" {
   description = "Flag to delete EBS volume when instance is terminated"
   type        = bool
 }
+
+variable "db_engine" {
+  description = "DB engine type eg:postgres or mysql"
+  type        = string
+}
+variable "db_instance_class" {
+  description = "Type of instance for db eg:db.t3.micro"
+  type        = string
+}
+
+variable "db_allocated_storage" {
+  description = "Size of the DB instance"
+  type        = number
+}
+
+variable "db_identifier" {
+  type = string
+}
+
+variable "db_multi_az" {
+  type = bool
+}
+
+variable "db_name" {
+  description = "name of the database"
+  type        = string
+}
+variable "db_password" {
+  description = "password for the database"
+  type        = string
+  sensitive   = true
+}
+
+variable "db_user" {
+  description = "username for the database"
+  type        = string
+}
+
+variable "db_port" {
+  description = "database port number"
+  type        = number
+}
+
+variable "app_port" {
+  type = number
+}
+
+variable "db_publicly_accessibility" {
+  type = bool
+}
+
+variable "log_db_conections" {
+  type    = string
+  default = "1"
+}
+
+variable "force_ssl" {
+  type    = string
+  default = "0"
+}
+
+variable "parameter_grp_family" {
+  type    = string
+  default = "postgres16"
+}
+
+variable "db_skip_final_snapshot" {
+  type = bool
+}
+
+variable "db_apply_immediately" {
+  type = bool
+}
