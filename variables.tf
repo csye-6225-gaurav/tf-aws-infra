@@ -85,16 +85,16 @@ variable "delete_on_termination" {
 
 variable "db_engine" {
   description = "DB engine type eg:postgres or mysql"
-  type = string
+  type        = string
 }
 variable "db_instance_class" {
   description = "Type of instance for db eg:db.t3.micro"
-  type = string
+  type        = string
 }
 
 variable "db_allocated_storage" {
   description = "Size of the DB instance"
-  type = number
+  type        = number
 }
 
 variable "db_identifier" {
@@ -107,22 +107,22 @@ variable "db_multi_az" {
 
 variable "db_name" {
   description = "name of the database"
-  type = string
+  type        = string
 }
 variable "db_password" {
   description = "password for the database"
-  type = string
-  sensitive = true
+  type        = string
+  sensitive   = true
 }
 
 variable "db_user" {
   description = "username for the database"
-  type = string
+  type        = string
 }
 
 variable "db_port" {
   description = "database port number"
-  type = number
+  type        = number
 }
 
 variable "app_port" {
@@ -134,17 +134,17 @@ variable "db_publicly_accessibility" {
 }
 
 variable "log_db_conections" {
-  type = string
+  type    = string
   default = "1"
 }
 
 variable "force_ssl" {
-  type = string
+  type    = string
   default = "0"
 }
 
 variable "parameter_grp_family" {
-  type = string
+  type    = string
   default = "postgres16"
 }
 
