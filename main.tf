@@ -91,15 +91,15 @@ resource "aws_iam_role" "ec2_s3_access" {
   name = "ec2_s3_access_role"
 
   assume_role_policy = jsonencode({
-    "Version": "2012-10-17",
-    "Statement": [
+    "Version" : "2012-10-17",
+    "Statement" : [
       {
-        "Action": "sts:AssumeRole",
-        "Principal": {
-          "Service": "ec2.amazonaws.com"
+        "Action" : "sts:AssumeRole",
+        "Principal" : {
+          "Service" : "ec2.amazonaws.com"
         },
-        "Effect": "Allow",
-        "Sid": ""
+        "Effect" : "Allow",
+        "Sid" : ""
       }
     ]
   })
@@ -110,17 +110,17 @@ resource "aws_iam_policy" "s3_access_policy" {
   name = "s3_access_policy"
 
   policy = jsonencode({
-    "Version": "2012-10-17",
-    "Statement": [
+    "Version" : "2012-10-17",
+    "Statement" : [
       {
-        "Effect": "Allow",
-        "Action": [
+        "Effect" : "Allow",
+        "Action" : [
           "s3:ListBucket",
           "s3:GetObject",
           "s3:PutObject",
           "s3:DeleteObject"
         ],
-        "Resource": [
+        "Resource" : [
           "arn:aws:s3:::${random_uuid.bucket_name.result}",
           "arn:aws:s3:::${random_uuid.bucket_name.result}/*"
         ]
@@ -272,7 +272,7 @@ resource "aws_s3_bucket" "webapp_bucket" {
   bucket = random_uuid.bucket_name.result
   # Force Terraform to delete non-empty bucket by enabling bucket versioning (required by Terraform)
   force_destroy = true
-  
+
 }
 
 resource "aws_s3_bucket_public_access_block" "example" {
@@ -303,7 +303,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "s3_encryption" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm     = "AES256"
+      sse_algorithm = "AES256"
     }
   }
 }
