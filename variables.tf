@@ -155,3 +155,13 @@ variable "db_skip_final_snapshot" {
 variable "db_apply_immediately" {
   type = bool
 }
+
+variable "zone_id" {
+  description = "The Route 53 Hosted Zone ID"
+  type        = string
+}
+
+variable "domain" {
+  type = string
+  default = "gauravgunjal.me"
+}

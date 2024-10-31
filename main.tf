@@ -87,6 +87,62 @@ resource "aws_vpc_security_group_egress_rule" "allow_all" {
   cidr_ipv4         = var.sec_grp_cidr
   ip_protocol       = "-1"
 }
+resource "aws_iam_role" "ec2_s3_access" {
+  name = "ec2_s3_access_role"
+
+  assume_role_policy = jsonencode({
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Action": "sts:AssumeRole",
+        "Principal": {
+          "Service": "ec2.amazonaws.com"
+        },
+        "Effect": "Allow",
+        "Sid": ""
+      }
+    ]
+  })
+}
+
+# Create an IAM policy for S3 access
+resource "aws_iam_policy" "s3_access_policy" {
+  name = "s3_access_policy"
+
+  policy = jsonencode({
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:ListBucket",
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ],
+        "Resource": [
+          "arn:aws:s3:::${random_uuid.bucket_name.result}",
+          "arn:aws:s3:::${random_uuid.bucket_name.result}/*"
+        ]
+      }
+    ]
+  })
+}
+resource "aws_iam_policy_attachment" "attach_cloudwatch_policy" {
+  name       = "attach-cloudwatch-agent-policy"
+  roles      = [aws_iam_role.ec2_s3_access.name]
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
+# Attach the policy to the IAM role
+resource "aws_iam_role_policy_attachment" "ec2_s3_access_attach" {
+  role       = aws_iam_role.ec2_s3_access.name
+  policy_arn = aws_iam_policy.s3_access_policy.arn
+}
+resource "aws_iam_instance_profile" "ec2_s3_access_profile" {
+  name = "ec2_s3_access_profile"
+  role = aws_iam_role.ec2_s3_access.name
+}
 
 resource "aws_instance" "webapp_instance" {
   ami                     = var.AMI_id
@@ -94,6 +150,8 @@ resource "aws_instance" "webapp_instance" {
   subnet_id               = aws_subnet.public_subnet[0].id
   vpc_security_group_ids  = [aws_security_group.app_sec_grp.id]
   disable_api_termination = var.ec2_termination_protection
+  # key_name = "aws_key"
+  iam_instance_profile = aws_iam_instance_profile.ec2_s3_access_profile.name
 
   root_block_device {
     volume_size           = var.volume_size
@@ -109,9 +167,18 @@ resource "aws_instance" "webapp_instance" {
     echo DB_Name=${var.db_name} >> /usr/bin/.env
     echo DB_Port=${var.db_port} >> /usr/bin/.env
     echo APP_Port=${var.app_port} >> /usr/bin/.env
+    echo S3_Bucket=${aws_s3_bucket.webapp_bucket.bucket_domain_name} >> /usr/bin/.env
+    echo Bucket_Name=${random_uuid.bucket_name.result} >> /usr/bin/.env
+    echo region=${var.region} >> /usr/bin/.env
     echo DB_SSLMode=disable >> /usr/bin/.env
     sudo chown csye6225:csye6225 /usr/bin/.env
     sudo chmod 644 /usr/bin/.env
+    sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+    -a fetch-config \
+    -m ec2 \
+    -c file:/opt/cloudwatch-config.json \
+    -s
+    sudo systemctl restart amazon-cloudwatch-agent
     touch opt/webapp.flag
     sudo systemctl restart webapp.service
   EOF
@@ -188,5 +255,55 @@ resource "aws_db_parameter_group" "postgres_pg" {
   }
   lifecycle {
     create_before_destroy = true
+  }
+}
+
+resource "aws_route53_record" "app_record" {
+  zone_id = var.zone_id
+  name    = "${var.env}.${var.domain}"
+  type    = "A"
+  ttl     = 300
+  records = [aws_instance.webapp_instance.public_ip]
+}
+
+resource "random_uuid" "bucket_name" {}
+
+resource "aws_s3_bucket" "webapp_bucket" {
+  bucket = random_uuid.bucket_name.result
+  # Force Terraform to delete non-empty bucket by enabling bucket versioning (required by Terraform)
+  force_destroy = true
+  
+}
+
+resource "aws_s3_bucket_public_access_block" "example" {
+  bucket = aws_s3_bucket.webapp_bucket.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+resource "aws_s3_bucket_lifecycle_configuration" "s3_lifecycly_policy" {
+  bucket = aws_s3_bucket.webapp_bucket.id
+
+  rule {
+    id = "Transition after 30 days"
+
+    status = "Enabled"
+
+    transition {
+      days          = 30
+      storage_class = "STANDARD_IA"
+    }
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "s3_encryption" {
+  bucket = aws_s3_bucket.webapp_bucket.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "AES256"
+    }
   }
 }
