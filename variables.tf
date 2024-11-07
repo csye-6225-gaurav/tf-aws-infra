@@ -165,3 +165,79 @@ variable "domain" {
   type    = string
   default = "gauravgunjal.me"
 }
+
+variable "autoscaling_policy_adjustment_type" {
+  type    = string
+  default = "ChangeInCapacity"
+}
+
+variable "policy_cooldown" {
+  type    = number
+  default = 120
+}
+
+variable "scaling_metric" {
+  type    = string
+  default = "CPUUtilization"
+}
+
+variable "metric_statistics" {
+  type    = string
+  default = "Average"
+}
+
+variable "metric_period" {
+  type    = string
+  default = "60"
+}
+
+variable "treat_missing_data_as" {
+  type    = string
+  default = "notBreaching"
+}
+
+variable "datapoints_to_alarm" {
+  type    = number
+  default = 1
+}
+
+variable "asg_max_size" {
+  type = number
+}
+
+variable "asg_min_size" {
+  type = number
+}
+
+variable "evaluation_periods" {
+  type = string
+}
+
+variable "cloudwatch_metric_namespace" {
+  type    = string
+  default = "AWS/EC2"
+}
+
+variable "scale_up_treshold" {
+  type = string
+}
+
+variable "scale_down_treshold" {
+  type = string
+}
+
+variable "tg_protocol" {
+  type    = string
+  default = "HTTP"
+}
+
+variable "tg_healthy_treshold" {
+  type = number
+}
+variable "tg_unhealthy_treshold" {
+  type = number
+}
+
+variable "asg_default_cooldown" {
+  type = number
+}
