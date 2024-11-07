@@ -71,18 +71,24 @@ resource "aws_security_group" "app_sec_grp" {
   name   = "${var.env}-application security group"
 }
 
+resource "aws_vpc_security_group_ingress_rule" "allow_lb_traffic" {
+  security_group_id            = aws_security_group.app_sec_grp.id
+  from_port                    = 8080
+  ip_protocol                  = "tcp"
+  to_port                      = 8080
+  referenced_security_group_id = aws_security_group.lb_sec_grp.id
+}
+
 resource "aws_vpc_security_group_ingress_rule" "allow_ssh_ipv4" {
   security_group_id = aws_security_group.app_sec_grp.id
-  cidr_ipv4         = var.sec_grp_cidr
-  from_port         = tonumber(each.value)
+  from_port         = 22
   ip_protocol       = "tcp"
-  to_port           = tonumber(each.value)
-
-  for_each = toset([for port in var.ingress_ports : tostring(port)])
+  to_port           = 22
+  cidr_ipv4         = var.sec_grp_cidr
 }
 
 
-resource "aws_vpc_security_group_egress_rule" "allow_all" {
+resource "aws_vpc_security_group_egress_rule" "allow_all_out_web" {
   security_group_id = aws_security_group.app_sec_grp.id
   cidr_ipv4         = var.sec_grp_cidr
   ip_protocol       = "-1"
@@ -142,51 +148,6 @@ resource "aws_iam_role_policy_attachment" "ec2_s3_access_attach" {
 resource "aws_iam_instance_profile" "ec2_s3_access_profile" {
   name = "ec2_s3_access_profile"
   role = aws_iam_role.ec2_s3_access.name
-}
-
-resource "aws_instance" "webapp_instance" {
-  ami                     = var.AMI_id
-  instance_type           = var.webapp_instance_type
-  subnet_id               = aws_subnet.public_subnet[0].id
-  vpc_security_group_ids  = [aws_security_group.app_sec_grp.id]
-  disable_api_termination = var.ec2_termination_protection
-  # key_name = "aws_key"
-  iam_instance_profile = aws_iam_instance_profile.ec2_s3_access_profile.name
-
-  root_block_device {
-    volume_size           = var.volume_size
-    volume_type           = var.volume_type
-    delete_on_termination = var.delete_on_termination
-  }
-  user_data = <<-EOF
-    #!/bin/bash
-    echo > /usr/bin/.env
-    echo DB_Host=${aws_db_instance.csye6225_rds.address} >> /usr/bin/.env
-    echo DB_User=${var.db_user} >> /usr/bin/.env
-    echo DB_Pass=${var.db_password} >> /usr/bin/.env
-    echo DB_Name=${var.db_name} >> /usr/bin/.env
-    echo DB_Port=${var.db_port} >> /usr/bin/.env
-    echo APP_Port=${var.app_port} >> /usr/bin/.env
-    echo S3_Bucket=${aws_s3_bucket.webapp_bucket.bucket_domain_name} >> /usr/bin/.env
-    echo Bucket_Name=${random_uuid.bucket_name.result} >> /usr/bin/.env
-    echo region=${var.region} >> /usr/bin/.env
-    echo DB_SSLMode=disable >> /usr/bin/.env
-    sudo chown csye6225:csye6225 /usr/bin/.env
-    sudo chmod 644 /usr/bin/.env
-    sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-    -a fetch-config \
-    -m ec2 \
-    -c file:/opt/cloudwatch-config.json \
-    -s
-    sudo systemctl restart amazon-cloudwatch-agent
-    touch opt/webapp.flag
-    sudo systemctl restart webapp.service
-  EOF
-
-  depends_on = [aws_db_instance.csye6225_rds]
-  tags = {
-    Name = "${var.env}-webapp-instance"
-  }
 }
 
 resource "aws_security_group" "db_sec_grp" {
@@ -262,8 +223,11 @@ resource "aws_route53_record" "app_record" {
   zone_id = var.zone_id
   name    = "${var.env}.${var.domain}"
   type    = "A"
-  ttl     = 300
-  records = [aws_instance.webapp_instance.public_ip]
+  alias {
+    name                   = aws_lb.app_lb.dns_name
+    zone_id                = aws_lb.app_lb.zone_id
+    evaluate_target_health = true
+  }
 }
 
 resource "random_uuid" "bucket_name" {}
@@ -306,4 +270,186 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "s3_encryption" {
       sse_algorithm = "AES256"
     }
   }
+}
+
+resource "aws_security_group" "lb_sec_grp" {
+  vpc_id = aws_vpc.infra_vpc.id
+  name   = "${var.env}-lb security group"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "allow_internet_traffic" {
+  security_group_id = aws_security_group.lb_sec_grp.id
+  from_port         = 80
+  to_port           = 80
+  ip_protocol       = "TCP"
+  cidr_ipv4         = var.sec_grp_cidr
+}
+
+resource "aws_vpc_security_group_egress_rule" "allow_all_out_lb" {
+  security_group_id = aws_security_group.lb_sec_grp.id
+  cidr_ipv4         = var.sec_grp_cidr
+  ip_protocol       = "-1"
+}
+
+resource "aws_lb" "app_lb" {
+  name               = "app-lb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.lb_sec_grp.id]
+  subnets            = [for subnet in aws_subnet.public_subnet : subnet.id]
+
+  enable_deletion_protection = false
+  tags = {
+    Environment = "${var.env}"
+  }
+}
+
+resource "aws_lb_target_group" "lb_target_group" {
+  name     = "lb-tg"
+  port     = var.app_port
+  protocol = var.tg_protocol
+  vpc_id   = aws_vpc.infra_vpc.id
+  health_check {
+    path                = "/healthz"
+    protocol            = var.tg_protocol
+    healthy_threshold   = var.tg_healthy_treshold
+    unhealthy_threshold = var.tg_unhealthy_treshold
+  }
+}
+
+resource "aws_lb_listener" "front_end" {
+  load_balancer_arn = aws_lb.app_lb.arn
+  port              = "80"
+  protocol          = var.tg_protocol
+
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.lb_target_group.arn
+  }
+}
+
+
+resource "aws_launch_template" "webapp_launch_template" {
+  name          = "csye6225_asg_template"
+  image_id      = var.AMI_id
+  instance_type = var.webapp_instance_type
+  key_name      = "Aws_key"
+  block_device_mappings {
+    device_name = "/dev/sdf"
+
+    ebs {
+      volume_size           = var.volume_size
+      volume_type           = var.volume_type
+      delete_on_termination = var.delete_on_termination
+    }
+  }
+  network_interfaces {
+    associate_public_ip_address = true
+    security_groups             = [aws_security_group.app_sec_grp.id]
+  }
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ec2_s3_access_profile.name
+  }
+  disable_api_termination = var.ec2_termination_protection
+
+  user_data = base64encode(
+    <<-EOF
+    #!/bin/bash
+    echo > /usr/bin/.env
+    echo DB_Host=${aws_db_instance.csye6225_rds.address} >> /usr/bin/.env
+    echo DB_User=${var.db_user} >> /usr/bin/.env
+    echo DB_Pass=${var.db_password} >> /usr/bin/.env
+    echo DB_Name=${var.db_name} >> /usr/bin/.env
+    echo DB_Port=${var.db_port} >> /usr/bin/.env
+    echo APP_Port=${var.app_port} >> /usr/bin/.env
+    echo S3_Bucket=${aws_s3_bucket.webapp_bucket.bucket_domain_name} >> /usr/bin/.env
+    echo Bucket_Name=${random_uuid.bucket_name.result} >> /usr/bin/.env
+    echo region=${var.region} >> /usr/bin/.env
+    echo DB_SSLMode=disable >> /usr/bin/.env
+    sudo chown csye6225:csye6225 /usr/bin/.env
+    sudo chmod 644 /usr/bin/.env
+    sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+    -a fetch-config \
+    -m ec2 \
+    -c file:/opt/cloudwatch-config.json \
+    -s
+    sudo systemctl restart amazon-cloudwatch-agent
+    touch opt/webapp.flag
+    sudo systemctl restart webapp.service
+  EOF
+  )
+  depends_on = [aws_db_instance.csye6225_rds]
+
+}
+
+resource "aws_autoscaling_group" "webapp_asg" {
+  vpc_zone_identifier = [aws_subnet.public_subnet[0].id, aws_subnet.public_subnet[1].id, aws_subnet.public_subnet[2].id]
+  desired_capacity    = var.asg_min_size
+  max_size            = var.asg_max_size
+  min_size            = var.asg_min_size
+  default_cooldown    = var.asg_default_cooldown
+  launch_template {
+    id = aws_launch_template.webapp_launch_template.id
+  }
+  target_group_arns = [aws_lb_target_group.lb_target_group.id]
+  tag {
+    key                 = "name"
+    propagate_at_launch = true
+    value               = "csye6225_asg"
+  }
+}
+
+resource "aws_autoscaling_policy" "scale_up" {
+  name                   = "test_scale_up"
+  autoscaling_group_name = aws_autoscaling_group.webapp_asg.name
+  adjustment_type        = var.autoscaling_policy_adjustment_type
+  scaling_adjustment     = 1
+  cooldown               = var.policy_cooldown
+
+}
+resource "aws_autoscaling_policy" "scale_down" {
+  name                   = "test_scale_down"
+  autoscaling_group_name = aws_autoscaling_group.webapp_asg.name
+  adjustment_type        = var.autoscaling_policy_adjustment_type
+  scaling_adjustment     = -1
+  cooldown               = var.policy_cooldown
+}
+
+resource "aws_cloudwatch_metric_alarm" "scale_down" {
+  alarm_description   = "Monitors CPU utilization"
+  alarm_actions       = [aws_autoscaling_policy.scale_down.arn]
+  alarm_name          = "test_scale_down"
+  comparison_operator = "LessThanOrEqualToThreshold"
+  namespace           = var.cloudwatch_metric_namespace
+  metric_name         = var.scaling_metric
+  threshold           = var.scale_down_treshold
+  evaluation_periods  = var.evaluation_periods
+  period              = var.metric_period
+  statistic           = var.metric_statistics
+  datapoints_to_alarm = var.datapoints_to_alarm
+  treat_missing_data  = var.treat_missing_data_as
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.webapp_asg.name
+  }
+
+}
+resource "aws_cloudwatch_metric_alarm" "scale_up" {
+  alarm_description   = "Monitors CPU utilization"
+  alarm_actions       = [aws_autoscaling_policy.scale_up.arn]
+  alarm_name          = "test_scale_up"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  namespace           = var.cloudwatch_metric_namespace
+  metric_name         = var.scaling_metric
+  threshold           = var.scale_up_treshold
+  evaluation_periods  = var.evaluation_periods
+  period              = var.metric_period
+  statistic           = var.metric_statistics
+  datapoints_to_alarm = var.datapoints_to_alarm
+  treat_missing_data  = var.treat_missing_data_as
+
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.webapp_asg.name
+  }
+
 }
