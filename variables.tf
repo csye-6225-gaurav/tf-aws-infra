@@ -166,6 +166,10 @@ variable "domain" {
   default = "gauravgunjal.me"
 }
 
+variable "ssh_key_nmae" {
+  type = string
+}
+
 variable "autoscaling_policy_adjustment_type" {
   type    = string
   default = "ChangeInCapacity"
@@ -240,4 +244,32 @@ variable "tg_unhealthy_treshold" {
 
 variable "asg_default_cooldown" {
   type = number
+}
+
+variable "lambda_zip" {
+  type    = string
+  default = "./myFunction.zip"
+}
+
+variable "lambda_func_name" {
+  type = string
+}
+
+variable "lambda_handler" {
+  type = string
+}
+
+variable "sendgrid_api_key" {
+  type      = string
+  sensitive = true
+}
+
+variable "lambda_runtime" {
+  type    = string
+  default = "provided.al2"
+}
+
+variable "sns_topic_name" {
+  type    = string
+  default = "user-verification-topic"
 }
