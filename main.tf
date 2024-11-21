@@ -155,12 +155,39 @@ resource "aws_security_group" "db_sec_grp" {
   name   = "${var.env}-database security group"
 }
 
+resource "aws_security_group" "lambda_sec_grp" {
+  vpc_id = aws_vpc.infra_vpc.id
+  name   = "${var.env}-lambda security group"
+}
+resource "aws_vpc_security_group_ingress_rule" "allow_sns_traffic" {
+  security_group_id = aws_security_group.lambda_sec_grp.id
+  from_port         = 0
+  to_port           = 0
+  ip_protocol       = "tcp"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+resource "aws_vpc_security_group_egress_rule" "allow_lambda_out_traffic" {
+  security_group_id = aws_security_group.lambda_sec_grp.id
+  from_port         = 0
+  to_port           = 0
+  ip_protocol       = "tcp"
+  cidr_ipv4         = "0.0.0.0/0"
+}
 resource "aws_vpc_security_group_ingress_rule" "allow_webapp_traffic" {
   security_group_id            = aws_security_group.db_sec_grp.id
   from_port                    = var.db_port
   to_port                      = var.db_port
   ip_protocol                  = "tcp"
   referenced_security_group_id = aws_security_group.app_sec_grp.id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "allow_lambda_traffic" {
+  security_group_id            = aws_security_group.db_sec_grp.id
+  from_port                    = var.db_port
+  to_port                      = var.db_port
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.lambda_sec_grp.id
 }
 
 resource "aws_vpc_security_group_egress_rule" "allow_webapp_traffic_egress" {
@@ -277,12 +304,36 @@ resource "aws_security_group" "lb_sec_grp" {
   name   = "${var.env}-lb security group"
 }
 
-resource "aws_vpc_security_group_ingress_rule" "allow_internet_traffic" {
+resource "aws_vpc_security_group_ingress_rule" "allow_http_traffic" {
   security_group_id = aws_security_group.lb_sec_grp.id
   from_port         = 80
   to_port           = 80
   ip_protocol       = "TCP"
   cidr_ipv4         = var.sec_grp_cidr
+}
+
+resource "aws_vpc_security_group_ingress_rule" "allow_http_ipv6_traffic" {
+  security_group_id = aws_security_group.lb_sec_grp.id
+  from_port         = 80
+  to_port           = 80
+  ip_protocol       = "TCP"
+  cidr_ipv6         = "::/0"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "allow_https_traffic" {
+  security_group_id = aws_security_group.lb_sec_grp.id
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "TCP"
+  cidr_ipv4         = var.sec_grp_cidr
+}
+
+resource "aws_vpc_security_group_ingress_rule" "allow_https_ipv6_traffic" {
+  security_group_id = aws_security_group.lb_sec_grp.id
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "TCP"
+  cidr_ipv6         = "::/0"
 }
 
 resource "aws_vpc_security_group_egress_rule" "allow_all_out_lb" {
@@ -314,6 +365,7 @@ resource "aws_lb_target_group" "lb_target_group" {
     protocol            = var.tg_protocol
     healthy_threshold   = var.tg_healthy_treshold
     unhealthy_threshold = var.tg_unhealthy_treshold
+    interval            = 300
   }
 }
 
@@ -334,7 +386,7 @@ resource "aws_launch_template" "webapp_launch_template" {
   name          = "csye6225_asg_template"
   image_id      = var.AMI_id
   instance_type = var.webapp_instance_type
-  key_name      = "Aws_key"
+  key_name      = var.ssh_key_nmae
   block_device_mappings {
     device_name = "/dev/sdf"
 
@@ -366,6 +418,7 @@ resource "aws_launch_template" "webapp_launch_template" {
     echo S3_Bucket=${aws_s3_bucket.webapp_bucket.bucket_domain_name} >> /usr/bin/.env
     echo Bucket_Name=${random_uuid.bucket_name.result} >> /usr/bin/.env
     echo region=${var.region} >> /usr/bin/.env
+    echo sns_topic=${aws_sns_topic.user_verification_topic.arn} >> /usr/bin/.env
     echo DB_SSLMode=disable >> /usr/bin/.env
     sudo chown csye6225:csye6225 /usr/bin/.env
     sudo chmod 644 /usr/bin/.env
@@ -384,13 +437,15 @@ resource "aws_launch_template" "webapp_launch_template" {
 }
 
 resource "aws_autoscaling_group" "webapp_asg" {
+  name                = "csye6225_asg"
   vpc_zone_identifier = [aws_subnet.public_subnet[0].id, aws_subnet.public_subnet[1].id, aws_subnet.public_subnet[2].id]
   desired_capacity    = var.asg_min_size
   max_size            = var.asg_max_size
   min_size            = var.asg_min_size
   default_cooldown    = var.asg_default_cooldown
   launch_template {
-    id = aws_launch_template.webapp_launch_template.id
+    id      = aws_launch_template.webapp_launch_template.id
+    version = "$Latest"
   }
   target_group_arns = [aws_lb_target_group.lb_target_group.id]
   tag {
@@ -452,4 +507,92 @@ resource "aws_cloudwatch_metric_alarm" "scale_up" {
     AutoScalingGroupName = aws_autoscaling_group.webapp_asg.name
   }
 
+}
+
+resource "aws_sns_topic" "user_verification_topic" {
+  name = var.sns_topic_name
+}
+resource "aws_sns_topic_policy" "default" {
+  arn = aws_sns_topic.user_verification_topic.arn
+
+  policy = data.aws_iam_policy_document.sns_topic_policy.json
+}
+
+data "aws_iam_policy_document" "sns_topic_policy" {
+  policy_id = "__default_policy_ID"
+
+  statement {
+    actions = [
+      "SNS:Subscribe",
+      "SNS:SetTopicAttributes",
+      "SNS:RemovePermission",
+      "SNS:Receive",
+      "SNS:Publish",
+      "SNS:ListSubscriptionsByTopic",
+      "SNS:GetTopicAttributes",
+      "SNS:DeleteTopic",
+      "SNS:AddPermission",
+    ]
+
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+
+    resources = [
+      aws_sns_topic.user_verification_topic.arn,
+    ]
+
+    sid = "__default_statement_ID"
+  }
+}
+resource "aws_sns_topic_subscription" "lambda" {
+  topic_arn = aws_sns_topic.user_verification_topic.arn
+  protocol  = "lambda"
+  endpoint  = aws_lambda_function.verify_user_lambda.arn
+}
+
+data "aws_iam_policy_document" "assume_role" {
+  statement {
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+
+    actions = ["sts:AssumeRole"]
+  }
+}
+
+resource "aws_iam_role" "iam_for_lambda" {
+  name               = "iam_for_lambda"
+  assume_role_policy = data.aws_iam_policy_document.assume_role.json
+}
+
+resource "aws_lambda_permission" "with_sns" {
+  statement_id  = "AllowExecutionFromSNS"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.verify_user_lambda.function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = aws_sns_topic.user_verification_topic.arn
+}
+
+resource "aws_lambda_function" "verify_user_lambda" {
+
+  filename      = var.lambda_zip
+  function_name = var.lambda_func_name
+  role          = aws_iam_role.iam_for_lambda.arn
+  handler       = var.lambda_handler
+
+  runtime = var.lambda_runtime
+
+  environment {
+    variables = {
+      SENDGRID_API_KEY = var.sendgrid_api_key
+      URL              = "${var.env}.${var.domain}/v1/user/self/verify"
+    }
+  }
 }
