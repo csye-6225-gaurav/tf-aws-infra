@@ -273,3 +273,13 @@ variable "sns_topic_name" {
   type    = string
   default = "user-verification-topic"
 }
+
+variable "kms_key_rotation" {
+  type    = number
+  default = 90
+}
+
+variable "enable_key_rotation" {
+  type    = bool
+  default = true
+}
