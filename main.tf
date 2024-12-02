@@ -93,7 +93,7 @@ resource "aws_vpc_security_group_egress_rule" "allow_all_out_web" {
   cidr_ipv4         = var.sec_grp_cidr
   ip_protocol       = "-1"
 }
-resource "aws_iam_role" "ec2_s3_access" {
+resource "aws_iam_role" "ec2_role" {
   name = "ec2_s3_access_role"
 
   assume_role_policy = jsonencode({
@@ -130,24 +130,32 @@ resource "aws_iam_policy" "s3_access_policy" {
           "arn:aws:s3:::${random_uuid.bucket_name.result}",
           "arn:aws:s3:::${random_uuid.bucket_name.result}/*"
         ]
+      },
+      {
+        "Effect" : "Allow",
+        "Action" : [
+          "kms:Decrypt",
+          "kms:GenerateDataKey"
+        ],
+        "Resource" : "${aws_kms_key.s3_key.arn}"
       }
     ]
   })
 }
 resource "aws_iam_policy_attachment" "attach_cloudwatch_policy" {
   name       = "attach-cloudwatch-agent-policy"
-  roles      = [aws_iam_role.ec2_s3_access.name]
+  roles      = [aws_iam_role.ec2_role.name]
   policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
 }
 
 # Attach the policy to the IAM role
 resource "aws_iam_role_policy_attachment" "ec2_s3_access_attach" {
-  role       = aws_iam_role.ec2_s3_access.name
+  role       = aws_iam_role.ec2_role.name
   policy_arn = aws_iam_policy.s3_access_policy.arn
 }
 resource "aws_iam_instance_profile" "ec2_s3_access_profile" {
   name = "ec2_s3_access_profile"
-  role = aws_iam_role.ec2_s3_access.name
+  role = aws_iam_role.ec2_role.name
 }
 
 resource "aws_security_group" "db_sec_grp" {
@@ -207,6 +215,12 @@ resource "aws_db_subnet_group" "rds_subnet_group" {
   }
 }
 
+resource "random_password" "db_password" {
+  length           = 16
+  special          = true
+  override_special = "_%@"
+}
+
 resource "aws_db_instance" "csye6225_rds" {
   engine                 = var.db_engine
   instance_class         = var.db_instance_class
@@ -214,7 +228,7 @@ resource "aws_db_instance" "csye6225_rds" {
   db_name                = var.db_name
   identifier             = var.db_identifier
   username               = var.db_user
-  password               = var.db_password
+  password               = random_password.db_password.result
   db_subnet_group_name   = aws_db_subnet_group.rds_subnet_group.name
   multi_az               = var.db_multi_az
   publicly_accessible    = var.db_publicly_accessibility
@@ -222,6 +236,8 @@ resource "aws_db_instance" "csye6225_rds" {
   skip_final_snapshot    = var.db_skip_final_snapshot
   apply_immediately      = var.db_apply_immediately
   parameter_group_name   = aws_db_parameter_group.postgres_pg.name
+  kms_key_id             = aws_kms_key.rds_key.arn
+  storage_encrypted      = true
 
   tags = {
     Name = "${var.env}-rds-instance"
@@ -294,7 +310,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "s3_encryption" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      kms_master_key_id = aws_kms_key.s3_key.arn
+      sse_algorithm     = "aws:kms"
     }
   }
 }
@@ -369,17 +386,17 @@ resource "aws_lb_target_group" "lb_target_group" {
   }
 }
 
-resource "aws_lb_listener" "front_end" {
-  load_balancer_arn = aws_lb.app_lb.arn
-  port              = "80"
-  protocol          = var.tg_protocol
+# resource "aws_lb_listener" "front_end" {
+#   load_balancer_arn = aws_lb.app_lb.arn
+#   port              = "80"
+#   protocol          = var.tg_protocol
 
 
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.lb_target_group.arn
-  }
-}
+#   default_action {
+#     type             = "forward"
+#     target_group_arn = aws_lb_target_group.lb_target_group.arn
+#   }
+# }
 
 
 resource "aws_launch_template" "webapp_launch_template" {
@@ -394,6 +411,8 @@ resource "aws_launch_template" "webapp_launch_template" {
       volume_size           = var.volume_size
       volume_type           = var.volume_type
       delete_on_termination = var.delete_on_termination
+      encrypted             = true
+      kms_key_id            = aws_kms_key.ec2_key.arn
     }
   }
   network_interfaces {
@@ -409,9 +428,14 @@ resource "aws_launch_template" "webapp_launch_template" {
     <<-EOF
     #!/bin/bash
     echo > /usr/bin/.env
+    snap install aws-cli --classic
+    DB_PASS=$(aws secretsmanager get-secret-value \
+        --secret-id ${aws_secretsmanager_secret.db_password_secret.name} \
+        --query SecretString \
+        --output text | jq -r '.DB_Pass')
     echo DB_Host=${aws_db_instance.csye6225_rds.address} >> /usr/bin/.env
     echo DB_User=${var.db_user} >> /usr/bin/.env
-    echo DB_Pass=${var.db_password} >> /usr/bin/.env
+    echo DB_Pass=$DB_PASS >> /usr/bin/.env
     echo DB_Name=${var.db_name} >> /usr/bin/.env
     echo DB_Port=${var.db_port} >> /usr/bin/.env
     echo APP_Port=${var.app_port} >> /usr/bin/.env
@@ -554,7 +578,7 @@ resource "aws_sns_topic_subscription" "lambda" {
   endpoint  = aws_lambda_function.verify_user_lambda.arn
 }
 
-data "aws_iam_policy_document" "assume_role" {
+data "aws_iam_policy_document" "lambda_role" {
   statement {
     effect = "Allow"
 
@@ -569,7 +593,7 @@ data "aws_iam_policy_document" "assume_role" {
 
 resource "aws_iam_role" "iam_for_lambda" {
   name               = "iam_for_lambda"
-  assume_role_policy = data.aws_iam_policy_document.assume_role.json
+  assume_role_policy = data.aws_iam_policy_document.lambda_role.json
 }
 
 resource "aws_lambda_permission" "with_sns" {
@@ -591,8 +615,548 @@ resource "aws_lambda_function" "verify_user_lambda" {
 
   environment {
     variables = {
-      SENDGRID_API_KEY = var.sendgrid_api_key
-      URL              = "${var.env}.${var.domain}/v1/user/self/verify"
+      lambda_secrets = aws_secretsmanager_secret.lambda_secrets.name
+      URL            = "${var.env}.${var.domain}/v1/user/self/verify"
     }
+  }
+}
+
+data "aws_caller_identity" "current" {}
+
+resource "aws_kms_key" "ec2_key" {
+  description             = "KMS key for EC2 instances"
+  enable_key_rotation     = var.enable_key_rotation
+  rotation_period_in_days = var.kms_key_rotation
+  deletion_window_in_days = 7
+  policy = jsonencode({
+    Id : "key-consolepolicy-3",
+    Version : "2012-10-17",
+    Statement : [
+      {
+        Sid : "Enable IAM User Permissions",
+        Effect : "Allow",
+        Principal : {
+          AWS : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        },
+        Action : "kms:*",
+        Resource : "*"
+      },
+      {
+        Sid : "Allow access for Key Administrators",
+        Effect : "Allow",
+        Principal : {
+          AWS : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/aws-cli"
+        },
+        Action : [
+          "kms:Create*",
+          "kms:Describe*",
+          "kms:Enable*",
+          "kms:List*",
+          "kms:Put*",
+          "kms:Update*",
+          "kms:Revoke*",
+          "kms:Disable*",
+          "kms:Get*",
+          "kms:Delete*",
+          "kms:TagResource",
+          "kms:UntagResource",
+          "kms:ScheduleKeyDeletion",
+          "kms:CancelKeyDeletion",
+          "kms:RotateKeyOnDemand"
+        ],
+        "Resource" : "*"
+      },
+      {
+        Sid : "Allow use of the key",
+        Effect : "Allow",
+        Principal : {
+          AWS : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+        },
+        Action : [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ],
+        Resource : "*"
+      },
+      {
+        Sid : "Allow attachment of persistent resources",
+        Effect : "Allow",
+        Principal : {
+          AWS : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+        },
+        Action : [
+          "kms:CreateGrant",
+          "kms:ListGrants",
+          "kms:RevokeGrant"
+        ],
+        Resource : "*",
+        Condition : {
+          Bool : {
+            "kms:GrantIsForAWSResource" : "true"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "${var.env}-ec2-key"
+  }
+}
+
+resource "aws_kms_key" "rds_key" {
+  description             = "KMS key for rds instances"
+  enable_key_rotation     = var.enable_key_rotation
+  rotation_period_in_days = var.kms_key_rotation
+  deletion_window_in_days = 7
+  policy = jsonencode({
+    Id : "key-consolepolicy-3",
+    Version : "2012-10-17",
+    Statement : [
+      {
+        Sid : "Enable IAM User Permissions",
+        Effect : "Allow",
+        Principal : {
+          AWS : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        },
+        Action : "kms:*",
+        Resource : "*"
+      },
+      {
+        Sid : "Allow access for Key Administrators",
+        Effect : "Allow",
+        Principal : {
+          AWS : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/aws-cli"
+        },
+        Action : [
+          "kms:Create*",
+          "kms:Describe*",
+          "kms:Enable*",
+          "kms:List*",
+          "kms:Put*",
+          "kms:Update*",
+          "kms:Revoke*",
+          "kms:Disable*",
+          "kms:Get*",
+          "kms:Delete*",
+          "kms:TagResource",
+          "kms:UntagResource",
+          "kms:ScheduleKeyDeletion",
+          "kms:CancelKeyDeletion",
+          "kms:RotateKeyOnDemand"
+        ],
+        "Resource" : "*"
+      },
+      {
+        Sid : "Allow use of the key",
+        Effect : "Allow",
+        Principal : {
+          AWS : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/rds.amazonaws.com/AWSServiceRoleForRDS"
+        },
+        Action : [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ],
+        Resource : "arn:aws:ec2:${var.region}:${data.aws_caller_identity.current.account_id}:db/*"
+      },
+      {
+        Sid : "Allow attachment of persistent resources",
+        Effect : "Allow",
+        Principal : {
+          AWS : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/rds.amazonaws.com/AWSServiceRoleForRDS"
+        },
+        Action : [
+          "kms:CreateGrant",
+          "kms:ListGrants",
+          "kms:RevokeGrant"
+        ],
+        Resource : "arn:aws:ec2:${var.region}:${data.aws_caller_identity.current.account_id}:db/*",
+        Condition : {
+          Bool : {
+            "kms:GrantIsForAWSResource" : "true"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "${var.env}-rds-key"
+  }
+}
+
+resource "aws_kms_key" "s3_key" {
+  description             = "KMS key for S3 bucket"
+  enable_key_rotation     = var.enable_key_rotation
+  rotation_period_in_days = var.kms_key_rotation
+  deletion_window_in_days = 7
+  policy = jsonencode({
+    Id : "key-consolepolicy-3",
+    Version : "2012-10-17",
+    Statement : [
+      {
+        Sid : "Enable IAM User Permissions",
+        Effect : "Allow",
+        Principal : {
+          AWS : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        },
+        Action : "kms:*",
+        Resource : "*"
+      },
+      {
+        Sid : "Allow access for Key Administrators",
+        Effect : "Allow",
+        Principal : {
+          AWS : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/aws-cli"
+        },
+        Action : [
+          "kms:Create*",
+          "kms:Describe*",
+          "kms:Enable*",
+          "kms:List*",
+          "kms:Put*",
+          "kms:Update*",
+          "kms:Revoke*",
+          "kms:Disable*",
+          "kms:Get*",
+          "kms:Delete*",
+          "kms:TagResource",
+          "kms:UntagResource",
+          "kms:ScheduleKeyDeletion",
+          "kms:CancelKeyDeletion",
+          "kms:RotateKeyOnDemand"
+        ],
+        "Resource" : "*"
+      },
+      {
+        Sid : "Allow use of the key",
+        Effect : "Allow",
+        Principal : {
+          Service : "s3.amazonaws.com"
+        },
+        Action : [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ],
+        Resource : "*"
+      },
+      {
+        Sid : "Allow attachment of persistent resources",
+        Effect : "Allow",
+        Principal : {
+          Service : "s3.amazonaws.com"
+        },
+        Action : [
+          "kms:CreateGrant",
+          "kms:ListGrants",
+          "kms:RevokeGrant"
+        ],
+        Resource : "*",
+        Condition : {
+          Bool : {
+            "kms:GrantIsForAWSResource" : "true"
+          }
+        }
+      },
+      {
+        Sid : "Allow EC2 instances to decrypt S3 objects",
+        Effect : "Allow",
+        Principal : {
+          AWS : "${aws_iam_role.ec2_role.arn}"
+        },
+        Action : [
+          "kms:Decrypt",
+          "kms:DescribeKey",
+          "kms:GenerateDataKey"
+        ],
+        Resource : "*"
+      }
+    ]
+  })
+
+  tags = {
+    Name = "${var.env}-S3-key"
+  }
+}
+
+resource "aws_secretsmanager_secret" "lambda_secrets" {
+  name                    = "lambda_secret_SG"
+  recovery_window_in_days = 0
+  kms_key_id              = aws_kms_key.lambda_secrets_kms.arn
+}
+
+resource "aws_secretsmanager_secret_version" "example" {
+  secret_id     = aws_secretsmanager_secret.lambda_secrets.id
+  secret_string = var.sendgrid_api_key
+}
+resource "aws_iam_policy" "lambda_secrets_access_policy" {
+  name = "lambda_secret_access_policy"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect : "Allow"
+        Action : [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        Resource : "${aws_secretsmanager_secret.lambda_secrets.arn}"
+      }
+    ]
+  })
+}
+resource "aws_iam_role_policy_attachment" "lambda_secrets_access_attachment" {
+  role       = aws_iam_role.iam_for_lambda.name
+  policy_arn = aws_iam_policy.lambda_secrets_access_policy.arn
+}
+
+resource "aws_kms_key" "lambda_secrets_kms" {
+  description             = "KMS key for encrypting Lambda secrets"
+  deletion_window_in_days = 7
+  enable_key_rotation     = var.enable_key_rotation
+  rotation_period_in_days = var.kms_key_rotation
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid : "Enable IAM User Permissions",
+        Effect : "Allow",
+        Principal : {
+          AWS : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        },
+        Action : "kms:*",
+        Resource : "*"
+      },
+      {
+        Sid : "Allow access for Key Administrators",
+        Effect : "Allow",
+        Principal : {
+          AWS : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/aws-cli"
+        },
+        Action : [
+          "kms:Create*",
+          "kms:Describe*",
+          "kms:Enable*",
+          "kms:List*",
+          "kms:Put*",
+          "kms:Update*",
+          "kms:Revoke*",
+          "kms:Disable*",
+          "kms:Get*",
+          "kms:Delete*",
+          "kms:TagResource",
+          "kms:UntagResource",
+          "kms:ScheduleKeyDeletion",
+          "kms:CancelKeyDeletion",
+          "kms:RotateKeyOnDemand"
+        ],
+        "Resource" : "*"
+      },
+      {
+        Sid : "AllowSecretsManagerAccess"
+        Effect : "Allow"
+        Principal : {
+          Service : "secretsmanager.amazonaws.com"
+        }
+        Action : [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:GenerateDataKey",
+          "kms:DescribeKey"
+        ]
+        Resource : "*"
+      },
+      {
+        Sid : "AllowLambdaDecryptAccess"
+        Effect : "Allow"
+        Principal : {
+          AWS : "${aws_iam_role.iam_for_lambda.arn}"
+        }
+        Action : [
+          "kms:Decrypt",
+          "kms:DescribeKey"
+        ]
+        Resource : "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_policy" "lambda_kms_access_policy" {
+  name = "lambda_kms_access_policy"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:DescribeKey"
+        ]
+        Resource = "${aws_kms_key.lambda_secrets_kms.arn}"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_kms_access_attachment" {
+  role       = aws_iam_role.iam_for_lambda.name
+  policy_arn = aws_iam_policy.lambda_kms_access_policy.arn
+}
+resource "random_uuid" "db_password_secret_ext" {}
+
+
+resource "aws_secretsmanager_secret" "db_password_secret" {
+  name       = "db_password_${random_uuid.db_password_secret_ext.result}"
+  kms_key_id = aws_kms_key.ec2_secrets_kms.arn
+}
+
+resource "aws_secretsmanager_secret_version" "db_password_secret_version" {
+  secret_id     = aws_secretsmanager_secret.db_password_secret.id
+  secret_string = jsonencode({ DB_Pass = random_password.db_password.result })
+}
+
+resource "aws_iam_policy" "ec2_secrets_access_policy" {
+  name = "lambda_secrets_access_policy"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect : "Allow"
+        Action : [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        Resource : "${aws_secretsmanager_secret.db_password_secret.arn}"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ec2_secrets_access_attachment" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = aws_iam_policy.ec2_secrets_access_policy.arn
+}
+
+resource "aws_kms_key" "ec2_secrets_kms" {
+  description             = "KMS key for encrypting ec2 secrets"
+  deletion_window_in_days = 7
+  enable_key_rotation     = var.enable_key_rotation
+  rotation_period_in_days = var.kms_key_rotation
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid : "Enable IAM User Permissions",
+        Effect : "Allow",
+        Principal : {
+          AWS : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        },
+        Action : "kms:*",
+        Resource : "*"
+      },
+      {
+        Sid : "Allow access for Key Administrators",
+        Effect : "Allow",
+        Principal : {
+          AWS : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/aws-cli"
+        },
+        Action : [
+          "kms:Create*",
+          "kms:Describe*",
+          "kms:Enable*",
+          "kms:List*",
+          "kms:Put*",
+          "kms:Update*",
+          "kms:Revoke*",
+          "kms:Disable*",
+          "kms:Get*",
+          "kms:Delete*",
+          "kms:TagResource",
+          "kms:UntagResource",
+          "kms:ScheduleKeyDeletion",
+          "kms:CancelKeyDeletion",
+          "kms:RotateKeyOnDemand"
+        ],
+        "Resource" : "*"
+      },
+      {
+        Sid : "AllowSecretsManagerAccess"
+        Effect : "Allow"
+        Principal : {
+          Service : "secretsmanager.amazonaws.com"
+        }
+        Action : [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:GenerateDataKey",
+          "kms:DescribeKey"
+        ]
+        Resource : "*"
+      },
+      {
+        Sid : "AllowEC2DecryptAccess"
+        Effect : "Allow"
+        Principal : {
+          AWS : "${aws_iam_role.ec2_role.arn}"
+        }
+        Action : [
+          "kms:Decrypt",
+          "kms:DescribeKey"
+        ]
+        Resource : "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_policy" "ec2_kms_access_policy" {
+  name = "ec2_kms_access_policy"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:DescribeKey"
+        ]
+        Resource = "${aws_kms_key.ec2_secrets_kms.arn}"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ec2_kms_access_attachment" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = aws_iam_policy.ec2_kms_access_policy.arn
+}
+
+data "aws_acm_certificate" "imported_cert" {
+  domain      = "${var.env}.gauravgunjal.me"
+  statuses    = ["ISSUED"]
+  most_recent = true
+}
+
+resource "aws_lb_listener" "https_listener" {
+  load_balancer_arn = aws_lb.app_lb.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-2016-08"
+
+  certificate_arn = data.aws_acm_certificate.imported_cert.arn
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.lb_target_group.arn
   }
 }
